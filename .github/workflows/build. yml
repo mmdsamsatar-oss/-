@@ -1,0 +1,48 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # دریافت پروژه از Repository
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      # نصب Java
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # آماده‌سازی Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # نصب SDK مورد نیاز
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
+
+      # اجازه اجرای Gradle Wrapper
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      # Build پروژه
+      - name: Build APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      # قرار دادن APK خروجی در GitHub
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-apk-builder
+          path: app/build/outputs/apk/debug/*.apk
