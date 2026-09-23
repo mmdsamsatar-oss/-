@@ -5,44 +5,167 @@ on:
 
 jobs:
   build:
+    name: Extract ZIPs and Build APK
     runs-on: ubuntu-latest
 
     steps:
-      # دریافت پروژه از Repository
-      - name: Checkout project
+
+      # 1. دریافت Repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # نصب Java
-      - name: Setup JDK
+      # 2. پیدا کردن و باز کردن تمام ZIP ها
+      - name: Extract all ZIP files
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p extracted
+
+          echo "Searching for ZIP files..."
+
+          found_zip=0
+
+          while IFS= read -r -d '' zipfile; do
+            found_zip=1
+
+            echo "======================================"
+            echo "ZIP found:"
+            echo "$zipfile"
+            echo "======================================"
+
+            zipname="$(basename "$zipfile" .zip)"
+
+            mkdir -p "extracted/$zipname"
+
+            unzip -o "$zipfile" -d "extracted/$zipname"
+
+          done < <(
+            find . \
+              -type f \
+              -iname "*.zip" \
+              -not -path "./.git/*" \
+              -not -path "./extracted/*" \
+              -print0
+          )
+
+          if [ "$found_zip" -eq 0 ]; then
+            echo "ERROR: No ZIP file found."
+            exit 1
+          fi
+
+          echo ""
+          echo "All ZIP files extracted successfully."
+
+          echo ""
+          echo "Extracted project structure:"
+          find extracted -maxdepth 6 -type f | sort
+
+      # 3. نصب Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      # آماده‌سازی Android SDK
+      # 4. آماده سازی Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # نصب SDK مورد نیاز
-      - name: Install Android SDK
+      # 5. نصب فقط SDK های مورد نیاز
+      - name: Install Android SDK packages
+        shell: bash
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools"
-          sdkmanager "platforms;android-35"
-          sdkmanager "build-tools;35.0.0"
+          set -e
 
-      # اجازه اجرای Gradle Wrapper
-      - name: Make Gradle executable
-        run: chmod +x ./gradlew
+          yes | sdkmanager --licenses > /dev/null || true
 
-      # Build پروژه
-      - name: Build APK
-        run: ./gradlew assembleDebug --stacktrace
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      # قرار دادن APK خروجی در GitHub
-      - name: Upload APK
+      # 6. پیدا کردن پروژه های Gradle
+      - name: Find Gradle projects
+        shell: bash
+        run: |
+          echo "Searching for Gradle projects..."
+
+          find extracted \
+            -type f \
+            \( \
+              -name "gradlew" \
+              -o -name "settings.gradle" \
+              -o -name "settings.gradle.kts" \
+              -o -name "build.gradle" \
+              -o -name "build.gradle.kts" \
+            \) \
+            -print
+
+      # 7. Build تمام پروژه هایی که Gradle Wrapper دارند
+      - name: Build Android projects
+        shell: bash
+        run: |
+          set -e
+
+          found_project=0
+
+          while IFS= read -r -d '' gradlew; do
+
+            found_project=1
+
+            project_dir="$(dirname "$gradlew")"
+
+            echo ""
+            echo "======================================"
+            echo "Building Android project:"
+            echo "$project_dir"
+            echo "======================================"
+
+            chmod +x "$gradlew"
+
+            (
+              cd "$project_dir"
+              ./gradlew assembleDebug --stacktrace
+            )
+
+          done < <(
+            find extracted \
+              -type f \
+              -name "gradlew" \
+              -print0
+          )
+
+          if [ "$found_project" -eq 0 ]; then
+            echo ""
+            echo "ERROR: No Gradle Wrapper was found."
+            echo ""
+            echo "The ZIP was extracted successfully,"
+            echo "but the Android project does not contain:"
+            echo ""
+            echo "    gradlew"
+            echo ""
+            exit 1
+          fi
+
+      # 8. پیدا کردن APK
+      - name: Find generated APKs
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "Generated APK files:"
+          echo "======================================"
+
+          find extracted \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      # 9. آپلود APK ها
+      - name: Upload generated APKs
         uses: actions/upload-artifact@v4
         with:
-          name: web-apk-builder
-          path: app/build/outputs/apk/debug/*.apk
+          name: generated-apks
+          path: extracted/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
