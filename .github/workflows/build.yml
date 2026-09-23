@@ -1,0 +1,118 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract ALL ZIP files
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p extracted
+
+          echo "Searching for ZIP files..."
+
+          find . -type f -iname "*.zip" \
+            -not -path "./.git/*" \
+            -print0 | while IFS= read -r -d '' zipfile; do
+
+              echo "----------------------------------------"
+              echo "Extracting: $zipfile"
+
+              zipname=$(basename "$zipfile" .zip)
+
+              mkdir -p "extracted/$zipname"
+
+              unzip -o "$zipfile" -d "extracted/$zipname"
+
+            done
+
+          echo "----------------------------------------"
+          echo "All ZIP files extracted."
+
+          find extracted -type f -print
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
+
+      - name: Find Android projects
+        run: |
+          echo "Searching for Gradle Android projects..."
+
+          find extracted \
+            -type f \
+            \( -name "gradlew" -o -name "build.gradle" -o -name "build.gradle.kts" \) \
+            -print
+
+      - name: Build all Android projects
+        shell: bash
+        run: |
+          set -e
+
+          found=0
+
+          while IFS= read -r -d '' gradle; do
+
+            project_dir=$(dirname "$gradle")
+
+            # فقط پروژه‌هایی که Gradle Wrapper دارند
+            if [ "$(basename "$gradle")" = "gradlew" ]; then
+
+              echo "========================================"
+              echo "Building project:"
+              echo "$project_dir"
+              echo "========================================"
+
+              chmod +x "$gradle"
+
+              (
+                cd "$project_dir"
+                ./gradlew assembleDebug --stacktrace
+              )
+
+              found=1
+            fi
+
+          done < <(find extracted -type f -name "gradlew" -print0)
+
+          if [ "$found" -eq 0 ]; then
+            echo "No Gradle Wrapper project was found."
+            exit 1
+          fi
+
+      - name: Find generated APK files
+        run: |
+          echo "Generated APK files:"
+          find extracted \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      - name: Upload ALL APK files
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-apks
+          path: extracted/**/*.apk
+          if-no-files-found: error
