@@ -5,13 +5,17 @@ on:
 
 jobs:
   build:
+    name: Extract ZIPs and Build APK
     runs-on: ubuntu-latest
 
     steps:
+
+      # 1. دریافت Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Find and extract ALL ZIP files
+      # 2. پیدا کردن و باز کردن تمام ZIP ها
+      - name: Extract all ZIP files
         shell: bash
         run: |
           set -e
@@ -20,99 +24,148 @@ jobs:
 
           echo "Searching for ZIP files..."
 
-          find . -type f -iname "*.zip" \
-            -not -path "./.git/*" \
-            -print0 | while IFS= read -r -d '' zipfile; do
+          found_zip=0
 
-              echo "----------------------------------------"
-              echo "Extracting: $zipfile"
+          while IFS= read -r -d '' zipfile; do
+            found_zip=1
 
-              zipname=$(basename "$zipfile" .zip)
+            echo "======================================"
+            echo "ZIP found:"
+            echo "$zipfile"
+            echo "======================================"
 
-              mkdir -p "extracted/$zipname"
+            zipname="$(basename "$zipfile" .zip)"
 
-              unzip -o "$zipfile" -d "extracted/$zipname"
+            mkdir -p "extracted/$zipname"
 
-            done
+            unzip -o "$zipfile" -d "extracted/$zipname"
 
-          echo "----------------------------------------"
-          echo "All ZIP files extracted."
+          done < <(
+            find . \
+              -type f \
+              -iname "*.zip" \
+              -not -path "./.git/*" \
+              -not -path "./extracted/*" \
+              -print0
+          )
 
-          find extracted -type f -print
+          if [ "$found_zip" -eq 0 ]; then
+            echo "ERROR: No ZIP file found."
+            exit 1
+          fi
 
-      - name: Setup Java
+          echo ""
+          echo "All ZIP files extracted successfully."
+
+          echo ""
+          echo "Extracted project structure:"
+          find extracted -maxdepth 6 -type f | sort
+
+      # 3. نصب Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
+      # 4. آماده سازی Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools"
-          sdkmanager "platforms;android-35"
-          sdkmanager "build-tools;35.0.0"
-
-      - name: Find Android projects
-        run: |
-          echo "Searching for Gradle Android projects..."
-
-          find extracted \
-            -type f \
-            \( -name "gradlew" -o -name "build.gradle" -o -name "build.gradle.kts" \) \
-            -print
-
-      - name: Build all Android projects
+      # 5. نصب فقط SDK های مورد نیاز
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -e
 
-          found=0
+          yes | sdkmanager --licenses > /dev/null || true
 
-          while IFS= read -r -d '' gradle; do
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-            project_dir=$(dirname "$gradle")
+      # 6. پیدا کردن پروژه های Gradle
+      - name: Find Gradle projects
+        shell: bash
+        run: |
+          echo "Searching for Gradle projects..."
 
-            # فقط پروژه‌هایی که Gradle Wrapper دارند
-            if [ "$(basename "$gradle")" = "gradlew" ]; then
+          find extracted \
+            -type f \
+            \( \
+              -name "gradlew" \
+              -o -name "settings.gradle" \
+              -o -name "settings.gradle.kts" \
+              -o -name "build.gradle" \
+              -o -name "build.gradle.kts" \
+            \) \
+            -print
 
-              echo "========================================"
-              echo "Building project:"
-              echo "$project_dir"
-              echo "========================================"
+      # 7. Build تمام پروژه هایی که Gradle Wrapper دارند
+      - name: Build Android projects
+        shell: bash
+        run: |
+          set -e
 
-              chmod +x "$gradle"
+          found_project=0
 
-              (
-                cd "$project_dir"
-                ./gradlew assembleDebug --stacktrace
-              )
+          while IFS= read -r -d '' gradlew; do
 
-              found=1
-            fi
+            found_project=1
 
-          done < <(find extracted -type f -name "gradlew" -print0)
+            project_dir="$(dirname "$gradlew")"
 
-          if [ "$found" -eq 0 ]; then
-            echo "No Gradle Wrapper project was found."
+            echo ""
+            echo "======================================"
+            echo "Building Android project:"
+            echo "$project_dir"
+            echo "======================================"
+
+            chmod +x "$gradlew"
+
+            (
+              cd "$project_dir"
+              ./gradlew assembleDebug --stacktrace
+            )
+
+          done < <(
+            find extracted \
+              -type f \
+              -name "gradlew" \
+              -print0
+          )
+
+          if [ "$found_project" -eq 0 ]; then
+            echo ""
+            echo "ERROR: No Gradle Wrapper was found."
+            echo ""
+            echo "The ZIP was extracted successfully,"
+            echo "but the Android project does not contain:"
+            echo ""
+            echo "    gradlew"
+            echo ""
             exit 1
           fi
 
-      - name: Find generated APK files
+      # 8. پیدا کردن APK
+      - name: Find generated APKs
+        shell: bash
         run: |
+          echo "======================================"
           echo "Generated APK files:"
+          echo "======================================"
+
           find extracted \
             -type f \
             -name "*.apk" \
             -print
 
-      - name: Upload ALL APK files
+      # 9. آپلود APK ها
+      - name: Upload generated APKs
         uses: actions/upload-artifact@v4
         with:
           name: generated-apks
-          path: extracted/**/*.apk
+          path: extracted/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
